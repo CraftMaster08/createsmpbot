@@ -36,10 +36,15 @@ export async function InstallGlobalCommands(appId, commands) {
   }
 }
 
-// Simple method that returns a random emoji from list
-export function getRandomEmoji() {
-  const emojiList = ['😭','😄','😌','🤓','😎','😤','🤖','😶‍🌫️','🌏','📸','💿','👋','🌊','✨'];
-  return emojiList[Math.floor(Math.random() * emojiList.length)];
+export async function InstallGuildCommands(appId, guildId, commands) {
+  // API endpoint to overwrite guild commands (instant, no propagation delay)
+  const endpoint = `applications/${appId}/guilds/${guildId}/commands`;
+
+  try {
+    await DiscordRequest(endpoint, { method: 'PUT', body: commands });
+  } catch (err) {
+    console.error(err);
+  }
 }
 
 export function capitalize(str) {
