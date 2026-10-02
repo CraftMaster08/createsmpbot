@@ -449,7 +449,13 @@ async function refreshStatusSession(session, { forceUpdate = false } = {}) {
 }
 
 async function updateStatusMessage(session, errorMessage = null) {
-  await patchOriginalMessage(session.token, await buildStatusPayload(session, errorMessage));
+  const payload = await buildStatusPayload(session, errorMessage);
+  // Prefer editing a bot-created message (persists long-term). Fall back to interaction webhook token.
+  if (session.channelId && session.messageId) {
+    await editBotMessage(session.channelId, session.messageId, payload);
+  } else {
+    await patchOriginalMessage(session.token, payload);
+  }
 }
 
 function scheduleStatusRefresh(stateId, delayMs = STATUS_REFRESH_INTERVAL_MS) {
@@ -515,6 +521,22 @@ async function patchOriginalMessage(token, payload) {
   return response;
 }
 
+// Send a message as the bot into a channel
+async function sendBotMessage(channelId, payload) {
+  const res = await DiscordRequest(`channels/${channelId}/messages`, { method: 'POST', body: payload });
+  return res.json();
+}
+
+// Edit a message as the bot
+async function editBotMessage(channelId, messageId, payload) {
+  return DiscordRequest(`channels/${channelId}/messages/${messageId}`, { method: 'PATCH', body: payload });
+}
+
+// Delete a message as the bot
+async function deleteBotMessage(channelId, messageId) {
+  return DiscordRequest(`channels/${channelId}/messages/${messageId}`, { method: 'DELETE' });
+}
+
 function scheduleAutoRefresh(stateId) {
   scheduleStatusRefresh(stateId);
   scheduleStatusWatcher(stateId);
@@ -561,6 +583,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
    */
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name } = data;
+    const channelId = req.body.channel_id;
 
     // "smpstatus" command - query Minecraft server status
     if (name === 'smpstatus') {
@@ -597,6 +620,25 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
 
           statusSessions.set(stateId, session);
           await refreshStatusSession(session, { forceUpdate: true });
+
+          // Create a persistent bot message in the channel so we can update it long-term.
+          try {
+            const payload = await buildStatusPayload(session);
+            if (channelId) {
+              const msg = await sendBotMessage(channelId, payload);
+              session.channelId = channelId;
+              session.messageId = msg.id;
+              // delete the ephemeral/original interaction webhook message if possible
+              deleteOriginalMessage(token).catch(() => {});
+            } else {
+              // fallback to editing the original webhook message
+              await patchOriginalMessage(token, payload);
+            }
+          } catch (err) {
+            console.error('failed to create persistent status message, falling back to webhook', err);
+            await patchOriginalMessage(token, await buildStatusPayload(session));
+          }
+
           scheduleAutoRefresh(stateId);
         } catch (err) {
           console.error('smpstatus error', err);
@@ -619,7 +661,19 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
           };
 
           statusSessions.set(stateId, session);
-          await patchOriginalMessage(token, await buildStatusPayload(session, 'Unable to reach the server right now.'));
+          try {
+            const payload = await buildStatusPayload(session, 'Unable to reach the server right now.');
+            if (channelId) {
+              const msg = await sendBotMessage(channelId, payload);
+              session.channelId = channelId;
+              session.messageId = msg.id;
+            } else {
+              await patchOriginalMessage(token, payload);
+            }
+          } catch (err2) {
+            console.error('failed to create fallback persistent message', err2);
+            await patchOriginalMessage(token, await buildStatusPayload(session, 'Unable to reach the server right now.'));
+          }
           scheduleAutoRefresh(stateId);
         }
       };
@@ -665,9 +719,15 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
       });
 
       clearStatusSession(stateId);
-      deleteOriginalMessage(session.token).catch((err) => {
-        console.error('failed to delete status message', err);
-      });
+      if (session.channelId && session.messageId) {
+        deleteBotMessage(session.channelId, session.messageId).catch((err) => {
+          console.error('failed to delete bot status message', err);
+        });
+      } else {
+        deleteOriginalMessage(session.token).catch((err) => {
+          console.error('failed to delete status message', err);
+        });
+      }
       return;
     }
 
@@ -679,7 +739,7 @@ app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async fun
         data: { content: 'Shutdown authorized. Admin warnings will be suppressed until the server is back online.', flags: 64 },
       });
 
-      await patchOriginalMessage(session.token, await buildStatusPayload(session));
+      await updateStatusMessage(session);
       return;
     }
 
