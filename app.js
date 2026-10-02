@@ -7,7 +7,6 @@ import {
   verifyKeyMiddleware,
 } from 'discord-interactions';
 import { DiscordRequest } from './utils.js';
-import { getShuffledOptions, getResult } from './game.js';
 import pkg from 'discord.js';
 const { Client, ActivityType } = pkg;
 
@@ -15,8 +14,6 @@ const { Client, ActivityType } = pkg;
 const app = express();
 // Get port, or default to 3000
 const PORT = process.env.PORT || 3000;
-// To keep track of our active games
-const activeGames = {};
 const statusSessions = new Map();
 
 const STATUS_REFRESH_INTERVAL_MS = 60 * 1000;
@@ -24,56 +21,6 @@ const STATUS_CHECK_INTERVAL_MS = 5 * 1000;
 
 function getStatusSession(stateId) {
   return statusSessions.get(stateId) || null;
-}
-
-const MOTD_COLOR_MAP = new Map([
-  ['#000000', '30'],
-  ['#0000aa', '34'],
-  ['#00aa00', '32'],
-  ['#00aaaa', '36'],
-  ['#aa0000', '31'],
-  ['#aa00aa', '35'],
-  ['#ffaa00', '33'],
-  ['#aaaaaa', '90'],
-  ['#555555', '90'],
-  ['#5555ff', '94'],
-  ['#ff5555', '91'],
-  ['#ff55ff', '95'],
-  ['#55ffff', '96'],
-  ['#ffffff', '97'],
-  ['#55ff55', '92'],
-  ['#ffff55', '93'],
-]);
-
-function decodeHtmlEntities(text) {
-  return String(text)
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-function normalizeColor(colorValue) {
-  if (!colorValue) return null;
-  return MOTD_COLOR_MAP.get(colorValue.toLowerCase()) || null;
-}
-
-function parseSpanStyle(tagText) {
-  const styleMatch = tagText.match(/style\s*=\s*"([^"]+)"/i);
-  const styleText = styleMatch ? styleMatch[1].toLowerCase() : '';
-  const colorMatch = styleText.match(/color:\s*(#[0-9a-f]{6})/i);
-  return {
-    bold: /font-weight:\s*bold/.test(styleText),
-    color: normalizeColor(colorMatch?.[1] || null),
-  };
-}
-
-function ansiFromStyle(style) {
-  const codes = [];
-  if (style.bold) codes.push('1');
-  if (style.color) codes.push(style.color);
-  return codes.length ? `\u001b[${codes.join(';')}m` : '';
 }
 
 function buildWidgetImageUrl(statusInfo, widgetUrl) {
@@ -336,7 +283,6 @@ function clearStatusSession(stateId) {
 
 function buildStatusEmbed(statusInfo, host, port, widgetUrl, errorMessage = null) {
   const isOnline = Boolean(statusInfo?.online);
-  const playersOnline = statusInfo?.players?.online ?? 0;
   const playerNames = extractPlayerNames(statusInfo?.players?.list);
   const version = statusInfo?.version?.name_clean || statusInfo?.version?.name_raw || 'unknown';
   const ipAddress = statusInfo?.ip_address || host;
@@ -371,10 +317,6 @@ async function buildStatusPayload(session, errorMessage = null) {
     embeds: [buildStatusEmbed(session.statusInfo, session.host, session.port, session.widgetUrl, errorMessage)],
     components: buildStatusComponents(session),
   };
-}
-
-function getStatusOnlineState(statusInfo) {
-  return Boolean(statusInfo?.online);
 }
 
 async function refreshStatusSession(session, { forceUpdate = false } = {}) {
@@ -568,7 +510,7 @@ gatewayClient.login(process.env.DISCORD_TOKEN).catch((err) => console.error('Gat
  */
 app.post('/interactions', verifyKeyMiddleware(process.env.PUBLIC_KEY), async function (req, res) {
   // Interaction id, type and data
-  const { id, type, data } = req.body;
+  const { type, data } = req.body;
 
   /**
    * Handle verification requests
